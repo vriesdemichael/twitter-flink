@@ -1,31 +1,15 @@
-import com.esotericsoftware.minlog.Log;
 import com.twitter.hbc.core.endpoint.Location;
 import com.twitter.hbc.core.endpoint.StatusesFilterEndpoint;
-import com.twitter.hbc.core.endpoint.StatusesSampleEndpoint;
 import com.twitter.hbc.core.endpoint.StreamingEndpoint;
 import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.common.functions.FoldFunction;
-import org.apache.flink.api.common.functions.ReduceFunction;
-import org.apache.flink.api.java.functions.KeySelector;
-import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.streaming.api.TimeCharacteristic;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
-import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor;
-import org.apache.flink.streaming.api.functions.windowing.AllWindowFunction;
-import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
 import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.assigners.SlidingTimeWindows;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.streaming.api.windowing.windows.GlobalWindow;
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
-import org.apache.flink.streaming.api.windowing.windows.Window;
 import org.apache.flink.streaming.connectors.twitter.TwitterSource;
-import org.apache.flink.streaming.util.keys.KeySelectorUtil;
 import org.apache.flink.util.Collector;
 import org.apache.sling.commons.json.JSONArray;
 import org.apache.sling.commons.json.JSONException;
@@ -40,8 +24,8 @@ import java.util.Collections;
 import java.util.Properties;
 
 public class TwitterHashTagCount {
-    private static final Logger LOG = LoggerFactory.getLogger(TwitterHashTagCount.class);
 
+    private static final Logger LOG = LoggerFactory.getLogger(TwitterHashTagCount.class);
 
     private static class FilterEndpoint implements TwitterSource.EndpointInitializer, Serializable {
 
@@ -49,8 +33,6 @@ public class TwitterHashTagCount {
         private final ArrayList<Location> locations;
         private ArrayList<String> languages;
         private ArrayList<String> trackTerms;
-
-
 
         FilterEndpoint(){
 
@@ -76,8 +58,6 @@ public class TwitterHashTagCount {
             Collections.addAll(this.followings, id);
         }
 
-
-
         @Override
         public StreamingEndpoint createEndpoint() {
             StatusesFilterEndpoint endpoint = new StatusesFilterEndpoint();
@@ -95,7 +75,9 @@ public class TwitterHashTagCount {
             }
             return endpoint;
         }
+
     }
+
     public static void main(String[] args) throws Exception {
 
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -108,9 +90,7 @@ public class TwitterHashTagCount {
             filter.addTrackTerm("VVD", "PVV", "GroenLinks", "GL", "CDA", "PVDA", "SP",
                     "CU", "D66", "SGP", "PvdD", "50plus", "stemmen", "verkiezingen", "trump");
 
-
             Properties props = new Properties();
-
             props.setProperty(TwitterSource.CONSUMER_KEY, "Vhh9wtoeqzWf08BhwmeUXOTSB");
             props.setProperty(TwitterSource.CONSUMER_SECRET, "Ou1nHWLvIoxQE56mYDJl5JauwkY2N67NSfQYyO46MYjuYDnKIJ");
             props.setProperty(TwitterSource.TOKEN, "3221388387-VwffqrtFc3P0fHVDZPL8ZxpCuaSUguw2rbGoz23");
@@ -119,14 +99,10 @@ public class TwitterHashTagCount {
             TwitterSource twitterSource = new TwitterSource(props);
             twitterSource.setCustomEndpointInitializer(filter);
 
-
             env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 
             env
                 .addSource(twitterSource)
-
-
-
                 .flatMap(new FlatMapFunction<String, Tuple2<String, Integer>>(){
                     @Override
                     public void flatMap(String value, Collector<Tuple2<String, Integer>> out) throws Exception {
@@ -145,7 +121,6 @@ public class TwitterHashTagCount {
 
                             }
                         } catch(JSONException | ArrayIndexOutOfBoundsException e){
-
                             //skip
                         }
                     }
@@ -203,22 +178,11 @@ public class TwitterHashTagCount {
 
 
             env.execute("Twitter Streaming Test");
+
         } catch (Exception e) {
             e.printStackTrace();
         }
 
-
-
-
-
-
-
-
-
     }
-
-
-
-
 
 }
