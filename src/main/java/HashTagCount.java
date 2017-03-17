@@ -1,7 +1,4 @@
-/**
- * Created by michael on 17-3-2017.
- */
-public class HashTagCount {
+public class HashTagCount implements Comparable<HashTagCount>{
     private int count;
     private String tag;
 
@@ -31,5 +28,11 @@ public class HashTagCount {
     @Override
     public String toString() {
         return "(" + tag + ", " + count + ")";
+    }
+
+
+    @Override
+    public int compareTo(HashTagCount o) {
+        return count - o.getCount();
     }
 }

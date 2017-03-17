@@ -1,32 +1,19 @@
 import com.twitter.hbc.core.endpoint.Location;
 import com.twitter.hbc.core.endpoint.StatusesFilterEndpoint;
 import com.twitter.hbc.core.endpoint.StreamingEndpoint;
-import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.common.functions.FoldFunction;
-import org.apache.flink.api.common.functions.ReduceFunction;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.java.functions.KeySelector;
-import org.apache.flink.api.java.tuple.Tuple;
-import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.AllWindowedStream;
-import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
-import org.apache.flink.streaming.api.datastream.WindowedStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
-import org.apache.flink.streaming.api.functions.ProcessFunction;
-import org.apache.flink.streaming.api.functions.windowing.*;
+import org.apache.flink.streaming.api.functions.windowing.AllWindowFunction;
 import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.streaming.api.windowing.windows.GlobalWindow;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
-import org.apache.flink.streaming.api.windowing.windows.Window;
 import org.apache.flink.streaming.connectors.redis.RedisSink;
+import org.apache.flink.streaming.connectors.redis.common.config.FlinkJedisPoolConfig;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommand;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommandDescription;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisMapper;
@@ -126,7 +113,6 @@ public class TwitterHashTagCount {
 
 
             env.setStreamTimeCharacteristic(TimeCharacteristic.IngestionTime);
-            // SOURCE -> MAP (#hashtag, count)
             SingleOutputStreamOperator<HashTagCount> flatMapped = env.addSource(twitterSource, "Twitter")
                     .flatMap(new FlatMapFunction<String, HashTagCount>() {
                         @Override
@@ -142,7 +128,6 @@ public class TwitterHashTagCount {
                         }
                     });
 
-            // (#hashtag, count) (hidden field: time)
             SingleOutputStreamOperator<HashTagCount> stampedMap = flatMapped.assignTimestampsAndWatermarks(
                     new AssignerWithPeriodicWatermarks<HashTagCount>() {
                         @Nullable
@@ -157,305 +142,77 @@ public class TwitterHashTagCount {
                         }
                     });
 
-            // ACC initialValue,
-            // FoldFunctions <T, ACC>,
-            // AllWindowFunction <ACC, R, W>,
-            // TypeInformation<ACC>,
-            // TypeInformation<R>
-            // ACC = HashTagCount //accumulator
-            // R = HashTagCount //ReturnType
-            // W = TimeWindow //window
-            // T = HashTagCount // initial Input
-            //
 
+            AllWindowedStream<HashTagCount, TimeWindow> windowedMap = stampedMap.keyBy("tag").timeWindowAll(Time.seconds(300), Time.seconds(5));
+            windowedMap
+                    .apply(new TopNTweetsAllWindowFunction())
+                    .addSink(
+                            new RedisSink<>(new FlinkJedisPoolConfig.Builder().setHost("127.0.0.1").build(),
+                                    new RedisMapper<Tuple3<Integer, String, Integer>>() {
+                                        @Override
+                                        public RedisCommandDescription getCommandDescription() {
+                                            return new RedisCommandDescription(RedisCommand.SET);
+                                        }
 
-//            window() |----------| fold() |-----|
+                                        @Override
+                                        public String getKeyFromData(Tuple3<Integer, String, Integer> data) {
+                                            return "Top10-" + data.f0;
+                                        }
 
-            AllWindowedStream<HashTagCount, TimeWindow> windowedMap = stampedMap.keyBy("tag").sum("count").timeWindowAll(Time.seconds(300), Time.seconds(5));
-            windowedMap.apply(new TopNTweetsAllWindowFunction()).print();
-//            windowedMap.apply()
-            /*windowedMap.apply(new AllWindowFunction<HashTagCount, HashTagCount, TimeWindow>() {
-                @Override
-                public void apply(TimeWindow window, Iterable<HashTagCount> values, Collector<HashTagCount> out) throws Exception {
-                    PriorityQueue<HashTagCount> topN = new PriorityQueue<HashTagCount>(Comparator.comparingInt((hashTag) -> (hashTag.getCount())));
-                    HashSet<String> encountered = new HashSet<>();
-                    LOG.debug("in apply");
-                    String previousKey = null;
-                    int previousValue = 0;
-                    for (HashTagCount tag : values) {
-
-                        if (previousKey != null && !previousKey.equals(tag.getTag())) {
-                            if (!encountered.add(previousKey)){
-                                LOG.debug("Already encountered " + previousKey);
-                            }
-                            topN.add(new HashTagCount(previousKey, previousValue));
-//                            LOG.debug("Added " + previousKey, previousValue);
-                            if (topN.size() > 10){
-                                topN.poll();
-                            }
-                            previousValue = 0;
-                        }
-                        previousKey = tag.getTag();
-                        previousValue += tag.getCount();
-                    }
-                    LOG.debug("End of apply, size = " + topN.size());
-                    for (HashTagCount hashTagCount : topN) {
-                        out.collect(hashTagCount);
-                    }
-                }
-            }).keyBy("count").print();
-
-*/
-                   /* .apply(
-                    new AllWindowFunction<HashTagCount, HashTagCount, TimeWindow>() {
-
-
-                        @Override
-                        public void apply(TimeWindow window, Iterable<HashTagCount> values, Collector<HashTagCount> out) throws Exception {
-
-                        }
-
-//                        @Override
-//                        public void apply(TimeWindow window, Iterable<HashTagCount> values, Collector<HashTagCount> out) throws Exception {
-//                            PriorityQueue<HashTagCount> topN = new PriorityQueue<HashTagCount>(Comparator.comparingInt((hashTag) -> -(hashTag.getCount())));
-//
-//                            LOG.debug("in apply");
-//                            String previousKey = null;
-//                            int previousValue = 0;
-//                            for (HashTagCount tag : values) {
-//
-//                                if (previousKey != null && !previousKey.equals(tag.getTag())) {
-//                                    topN.add(new HashTagCount(previousKey, previousValue));
-//                                    if (topN.size() > 10){
-//                                        topN.poll();
-//                                    }
-//                                    previousValue = 0;
-//                                }
-//                                LOG.debug(previousKey);
-//                                previousKey = tag.getTag();
-//                                LOG.debug(previousKey);
-//                                previousValue += tag.getCount();
-//                            }
-//                            LOG.debug("End of apply, size = " + topN.size());
-//                            for (HashTagCount hashTagCount : topN) {
-//                                out.collect(hashTagCount);
-//                            }
-//                        }
-
-            }).print();*/
-                    /*.addSink(new RedisMapper<HashTagCount>() {
-                @Override
-                public RedisCommandDescription getCommandDescription() {
-                    return new RedisCommandDescription(RedisCommand.HSET, "topNHashTags");
-                }
-
-                @Override
-                public String getKeyFromData(HashTagCount data) {
-                    return data.getTag();
-                }
-
-                @Override
-                public String getValueFromData(HashTagCount data) {
-                    return Integer.toString(data.getCount());
-                }
-            }*/
-//            windowedMap.fold(new HashTagCount(),
-//
-//                    new FoldFunction<HashTagCount, HashTagCount>() {
-//                        @Override
-//                        public HashTagCount fold(HashTagCount accumulator, HashTagCount value) throws Exception {
-//
-//                            if (accumulator.getTag() != null && !accumulator.getTag().equals(value.getTag())) {
-//                                accumulator = new HashTagCount();
-//                            }
-//
-//                            accumulator.setTag(value.getTag());
-//                            accumulator.setCount(accumulator.getCount() + value.getCount());
-//                            LOG.debug("Fold " + accumulator);
-//
-//                            return accumulator;
-//                        }
-//                    }
-//
-//            ).print();
-                    //.keyBy("tag").sum("count").print();
-
-//            windowedMap.fold(
-//                        new HashTagCount(), //ACC initialValue
-//                        (FoldFunction<HashTagCount, HashTagCount>) (accumulator, value) -> {
-//                            if (accumulator.getTag() != null && !accumulator.getTag().equals(value.getTag())){
-//                                accumulator = new HashTagCount();
-//                            }
-//                            accumulator.setTag(value.getTag());
-//                            accumulator.setCount(accumulator.getCount() + value.getCount());
-//                            LOG.debug("Fold " + accumulator);
-//                            return accumulator;
-//                        },
-//                    (WindowFunction<HashTagCount, HashTagCount, Tuple, TimeWindow>) (tuple, window, input, out) -> {
-//                        LOG.debug("Apply called");
-//                        for (HashTagCount hashTag : input) {
-//                            LOG.debug("Apply " + hashTag);
-//                        }
-//                    },
-//                    stampedMap.getType(),
-//                    stampedMap.getType()
-//                );
-//                    .print();
-                        /*.fold(new HashTagCount(), (accumulator, value) -> {
-                    accumulator.setCount(accumulator.getCount() + 1);
-                    LOG.debug("Fold: " + value.toString());
-                    return accumulator;
-                }).print();*/
-
-//                        .sum("count").print();
-//            KeyedStream<HashTagCount, String> keyedMap = stampedMap.keyBy(new KeySelector<HashTagCount, String>() {
-//                @Override
-//                public String getKey(HashTagCount value) throws Exception {
-//                    return value.getTag();
-//                }
-//            });
-//
-//            WindowedStream<HashTagCount, String, TimeWindow> windowedMap = keyedMap.timeWindow(Time.seconds(10), Time.seconds(5));
-////            AllWindowedStream<HashTagCount, GlobalWindow> windowedMap = keyedMap.countWindowAll(100, 5);
-//            windowedMap.sum("count").print();
-
-////            WindowedStream<HashtagCount>, Tuple, TimeWindow> windowedMap =  keyedMap.window(SlidingEventTimeWindows.of(Time.seconds(5), Time.seconds(1)));
-//
-//            // TODO Fix deze
-///*            windowedMap.fold(
-//                    new FoldApplyAllWindowFunction<GlobalWindow, HashtagCount, Integer>, HashtagCount, HashtagCount>(
-//                            new HashtagCount(),
-//                            new FoldFunction<HashtagCount, HashtagCount>() {
-//                                @Override
-//                                public Tuple2<String, Integer> fold(Tuple2<String, Integer> accumulator, Tuple2<String, Integer> value) throws Exception {
-//                                    return value;
-//                                }
-//                            },
-//                            new AllWindowFunction<HashtagCount, HashtagCount, GlobalWindow>() {
-//                                @Override
-//                                public void apply(GlobalWindow window, Iterable<HashtagCount> values, Collector<HashtagCount> out) throws Exception {
-//                                    for (HashtagCount keyedTuple : values) {
-//                                        out.collect(keyedTuple);
-//                                    }
-//                                }
-//                            }, windowedMap.getInputType()
-//                    ));
-//                   */
-//
-//
-//
-////            windowedMap.apply(new WindowFunction<Tuple2<String,Integer>, Tuple2<String, Integer>, Tuple, GlobalWindow>() {
-////                @Override
-////                public void apply(Tuple tuple, GlobalWindow window, Iterable<Tuple2<String, Integer>> input, Collector<Tuple2<String, Integer>> out) throws Exception {
-////                    for (Tuple2<String, Integer> keyedTuple : input) {
-////                        out.collect(keyedTuple);
-////                    }
-////                }
-////            }).print();
-//
-//            windowedMap
-//                    .apply(new AllWindowFunction<HashtagCount, HashtagCount, GlobalWindow>() {
-//                        @Override
-//                        public void apply(GlobalWindow window, Iterable<HashtagCount> values, Collector<HashtagCount> out) throws Exception {
-//                            for (HashtagCount hashtag : values) {
-//                                LOG.info("Apply: " + hashtag);
-//                                out.collect(hashtag);
-//                            }
-//                        }
-//                    }).print()
-////                    .reduce(new PrintTweetsReduceFunction()).printToErr()
-//
-//
-//                    ;
-
-
-
+                                        @Override
+                                        public String getValueFromData(Tuple3<Integer, String, Integer> data) {
+                                            return data.f1 + ", " + Integer.toString(data.f2);
+                                        }
+                                    }
+                            ));
             env.execute("Twitter Streaming Test");
         } catch (Exception e) {
             e.printStackTrace();
         }
-
-
-
-
-
-
-
-
-
     }
 
-    static class TopNTweetsAllWindowFunction implements AllWindowFunction<HashTagCount, HashTagCount, TimeWindow> {
+    static class TopNTweetsAllWindowFunction implements AllWindowFunction<HashTagCount, Tuple3<Integer, String, Integer>, TimeWindow> {
 
         @Override
-        public void apply(TimeWindow window, Iterable<HashTagCount> values, Collector<HashTagCount> out) throws Exception {
+        public void apply(TimeWindow window, Iterable<HashTagCount> values, Collector<Tuple3<Integer, String, Integer>> out) throws Exception {
             List<HashTagCount> entries = new LinkedList<>();
 
 
+            LOG.debug("Apply, new window");
             for (HashTagCount tag : values) {
-                LOG.debug(tag.toString());
                 if (entries.size() == 0 ) {
                     entries.add(tag);
                 }
 
-                for (HashTagCount h : entries){
-                    boolean found = false;
-                    if (h.getTag().equals(tag.getTag())) {
-                        if (h.getCount() > tag.getCount()) {
-                            h.setCount(tag.getCount());
-                            found = true;
-                        }
-                    }
-                    if (!found) {
-                        System.err.println("Found");
+                ListIterator<HashTagCount> iter = entries.listIterator();
 
-                        entries.add(tag);
-                    } else {
-                        System.err.println("Not found");
+                boolean modified = false;
+                while (iter.hasNext()) {
+                    HashTagCount h = iter.next();
+
+                    if (h.getTag().equals(tag.getTag())) {
+                        iter.set(new HashTagCount(tag.getTag(), h.getCount() + tag.getCount()));
+                        modified = true;
+                        break;
                     }
+                }
+                if (!modified) {
+                    iter.add(tag);
                 }
             }
 
 
-            entries.sort(Comparator.comparingInt(HashTagCount::getCount));
+            entries.sort((o1, o2) -> o2.getCount() - o1.getCount());
+
             int collectSize = entries.size() >= 10 ? 10 : entries.size();
             for (int i = 0; i < collectSize; i++) {
-                out.collect(entries.get(i));
+                LOG.info((i + 1) + ") " + entries.get(i));
+                out.collect(new Tuple3<>((i+1), entries.get(i).getTag(), entries.get(i).getCount()));
             }
 
-            LOG.debug("End of apply, size = " + entries.size());
             entries.clear();
         }
     }
-
-    static class PrintTweetsReduceFunction implements ReduceFunction<HashTagCount> {
-        @Override
-        public HashTagCount reduce (HashTagCount value1, HashTagCount value2) throws Exception {
-            LOG.debug("Red: " + value1 + value2);
-            return value2;
-        }
-    }
-
-    public static <K, V extends Comparable<? super V>> Map<K, V> sortByValue( Map<K, V> map ) {
-        List<Map.Entry<K, V>> list =
-                new LinkedList<Map.Entry<K, V>>( map.entrySet() );
-        Collections.sort( list, new Comparator<Map.Entry<K, V>>() {
-            public int compare( Map.Entry<K, V> o1, Map.Entry<K, V> o2 )
-            {
-                return (o1.getValue()).compareTo( o2.getValue() );
-            }
-        } );
-
-        Map<K, V> result = new LinkedHashMap<K, V>();
-        for (Map.Entry<K, V> entry : list) {
-            result.put( entry.getKey(), entry.getValue() );
-        }
-        return result;
-    }
-
-
-
-
 
 
 }
