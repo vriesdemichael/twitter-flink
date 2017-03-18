@@ -73,10 +73,10 @@ public class TopNHashtags {
         }
 
         Properties props = new Properties();
-        props.setProperty(TwitterSource.CONSUMER_KEY, "Vhh9wtoeqzWf08BhwmeUXOTSB");
-        props.setProperty(TwitterSource.CONSUMER_SECRET, "Ou1nHWLvIoxQE56mYDJl5JauwkY2N67NSfQYyO46MYjuYDnKIJ");
-        props.setProperty(TwitterSource.TOKEN, "3221388387-VwffqrtFc3P0fHVDZPL8ZxpCuaSUguw2rbGoz23");
-        props.setProperty(TwitterSource.TOKEN_SECRET, "7dhijHUDA4BBtnCxAdnQqlLiNPWVF2P3jRMmWTrKW2oJ4");
+        props.setProperty(TwitterSource.CONSUMER_KEY, parameter.getRequired("twitterConsumerKey"));
+        props.setProperty(TwitterSource.CONSUMER_SECRET, parameter.getRequired("twitterConsumerSecret"));
+        props.setProperty(TwitterSource.TOKEN, parameter.getRequired("twitterToken"));
+        props.setProperty(TwitterSource.TOKEN_SECRET, parameter.getRequired("twitterSecret"));
 
         TwitterSource twitter = new TwitterSource(props);
         twitter.setCustomEndpointInitializer(filter);
