@@ -43,11 +43,13 @@ public class TopNHashtags {
         if(f.exists() && !f.isDirectory()) {
             LOG.debug("Found parameters in " + propertiesPath);
             parameter = ParameterTool.fromPropertiesFile(TopNHashtags.class.getResource(propertiesPath).getFile());
-            parameter.mergeWith(ParameterTool.fromArgs(args));
+            parameter = parameter.mergeWith(ParameterTool.fromArgs(args));
         } else {
             LOG.debug("Using args[] as parameters");
             parameter = ParameterTool.fromArgs(args);
         }
+
+        LOG.debug("Parameters read: " + parameter.toMap().toString());
 
         final String redisHost = parameter.get("redisHost", "localhost");
         final int redisPort = parameter.getInt("redisPort", 6379);
@@ -99,14 +101,20 @@ public class TopNHashtags {
          */
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
+
         env.setStreamTimeCharacteristic(TimeCharacteristic.IngestionTime);
 
         if (parameter.has("maxParallelism")) {
             env.setMaxParallelism(parameter.getInt("maxParallelism"));
+            LOG.debug("max parallelism set to " + env.getMaxParallelism());
         }
         if (parameter.has("setParallelism")) {
             env.setParallelism(parameter.getInt("setParallelism"));
+            LOG.debug("parallelism set to " + env.getParallelism());
         }
+
+
+        LOG.debug(String.format("Starting TopNHashtags with: N=%d, window size=%d, window slide=%d, redis=%s%d", n, windowSize, windowSlide, redisHost, redisPort));
 
         env
             /*
