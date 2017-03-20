@@ -39,10 +39,11 @@ public class TopNHashtags {
         ParameterTool parameter;
 
         String propertiesPath = "TopNHashtags.properties";
-        File f = new File(propertiesPath);
+        File f = new File(TopNHashtags.class.getResource(propertiesPath).getFile());
         if(f.exists() && !f.isDirectory()) {
             LOG.debug("Found parameters in " + propertiesPath);
-            parameter = ParameterTool.fromPropertiesFile(propertiesPath);
+            parameter = ParameterTool.fromPropertiesFile(TopNHashtags.class.getResource(propertiesPath).getFile());
+            parameter.mergeWith(ParameterTool.fromArgs(args));
         } else {
             LOG.debug("Using args[] as parameters");
             parameter = ParameterTool.fromArgs(args);
@@ -99,8 +100,14 @@ public class TopNHashtags {
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
         env.setStreamTimeCharacteristic(TimeCharacteristic.IngestionTime);
-        env.setMaxParallelism(5);
-        env.setParallelism(5);
+
+        if (parameter.has("maxParallelism")) {
+            env.setMaxParallelism(parameter.getInt("maxParallelism"));
+        }
+        if (parameter.has("setParallelism")) {
+            env.setParallelism(parameter.getInt("setParallelism"));
+        }
+
         env
             /*
              * Get Data from the TwitterSource
