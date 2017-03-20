@@ -5,8 +5,8 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>nl.saxion.bdph.flink</groupId>
-    <artifactId>TopNHashTags</artifactId>
-    <version>1.0</version>
+    <artifactId>TopNHashtags</artifactId>
+    <version>1.2</version>
 
 
     <properties>

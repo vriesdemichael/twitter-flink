@@ -203,7 +203,7 @@ public class TopNHashtags {
                             return data.f1 + ", " + Integer.toString(data.f2);
                         }
                     }
-                ));
+                )).name("Redis_" + redisHost + ":" + redisPort);
 
         /*
          *  Actually execute the streaming plan defined above.
