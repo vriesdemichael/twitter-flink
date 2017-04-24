@@ -1,16 +1,14 @@
 import org.apache.commons.lang.ArrayUtils;
 import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.streaming.api.TimeCharacteristic;
-import org.apache.flink.streaming.api.datastream.DataStreamSink;
+import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
 import org.apache.flink.streaming.api.functions.co.CoFlatMapFunction;
-import org.apache.flink.streaming.api.functions.co.CoProcessFunction;
 import org.apache.flink.streaming.api.functions.windowing.AllWindowFunction;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.api.windowing.time.Time;
@@ -42,6 +40,10 @@ public class TopNHashtags {
     private static int n;
 
     public static void main(String[] args) throws Exception {
+
+        /*
+         * Configuration
+         */
 
         //Get parameters from properties file or args.
         ParameterTool parameter;
@@ -92,24 +94,7 @@ public class TopNHashtags {
         TwitterSource twitter = new TwitterSource(props);
         twitter.setCustomEndpointInitializer(filter);
 
-
-        /*
-         * Flink streaming Overview:
-         *
-         * env
-         *      .addSource(...)
-         *      .flatmap(...)
-         *      .returns(...)
-         *      .assignTimestampsAndWatermarks(...)
-         *      .timeWindowAll(...)
-         *      // Stream splits up into time windows here
-         *      .apply(...)
-         *      .addSink(...)
-         *
-         */
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-
-
         env.setStreamTimeCharacteristic(TimeCharacteristic.IngestionTime);
 
         if (parameter.has("maxParallelism")) {
@@ -121,147 +106,72 @@ public class TopNHashtags {
             LOG.debug("parallelism set to " + env.getParallelism());
         }
 
-
-        LOG.debug(String.format("Starting TopNHashtags with: N=%d, window size=%d, window slide=%d, redis=%s%d", n, windowSize, windowSlide, redisHost, redisPort));
-
-
-        SingleOutputStreamOperator<Tuple3<Long, String, String>> mappedStatuses = env
-            /*
-             * Get Data from the TwitterSource
-             * Returns a JSON String representation of a status update
-             */
-            .addSource(twitter, "Twitter")
-            /*
-             * JSON String -> multiple (<hashtag>, <count>)
-             * Maps the hashtags listed in the JSON String.
-             */
-            .flatMap(new FlatMapFunction<String, Tuple3<Long, String, String>>() {
-                @Override
-                public void flatMap(String value, Collector<Tuple3<Long, String, String>> collector) throws Exception {
-                    try {
-                        JSONObject status = new JSONObject(value);
-                        String statusText = status.getString("text");
-                        Long statusID = status.getLong("id");
-
-                        JSONArray hashTags = status.getJSONObject("entities").getJSONArray("hashtags");
-                        StringBuilder hashTagString = new StringBuilder();
-                        for (int i = 0; i < hashTags.length(); i++) {
-                            if (hashTagString.length() > 0) {
-                                hashTagString.append(" ");
-                            }
-                            hashTagString.append(hashTags.getJSONObject(i).getString("text").toLowerCase());
-                        }
-
-                        collector.collect(new Tuple3<Long, String, String>(statusID, statusText, hashTagString.toString()));
-
-                    } catch (JSONException | ArrayIndexOutOfBoundsException e) {/* Skip */}
-                }
-            })
-            /*
-             * Assign timestamps and Watermarks, these are needed to make use of a TimeWindow
-             * A better way is to do this is the Source, but TwitterSource does not do this.
-             */
-            .assignTimestampsAndWatermarks(new AssignerWithPeriodicWatermarks<Tuple3<Long, String, String>>() {
-                @Override
-                public Watermark getCurrentWatermark() {
-                    return new Watermark(System.currentTimeMillis() - 1000L);
-                }
-
-                @Override
-                public long extractTimestamp(Tuple3<Long, String, String> element, long previousElementTimestamp) {
-                    return System.currentTimeMillis();
-                }
-            });
-
-
-        SingleOutputStreamOperator<Tuple1<String>> tagsOnly = mappedStatuses.project(2);
-
-        SingleOutputStreamOperator<Tuple3<Integer, String, Long>> topNCalc = tagsOnly.flatMap(new FlatMapFunction<Tuple1<String>, Tuple2<String, Long>>() {
-            @Override
-            public void flatMap(Tuple1<String> value, Collector<Tuple2<String, Long>> out) throws Exception {
-                for (String tag : value.f0.trim().split(" ")) {
-                    if (tag.equals(" ") || tag.equals("")) {
-                        continue;
-                    }
-                    out.collect(new Tuple2<>(tag, 1L));
-                }
-            }
-        })
-            /*
-             *
-             * Create a sliding time window, the first value is the length of the time window, the second
-             * is the interval at which a new time window is started.
-             *
-             *       0        60      120     180     240     300     360     420
-             *       |---------------Window 1----------------|
-             *               |---------------Window 2----------------|
-             *                       |---------------Window 3----------------|
-             */
-                .timeWindowAll(Time.seconds(windowSize), Time.seconds(windowSlide))
-
-            /*
-             * The apply function specified in TopNTweetsAllWindowFunction is called. It implements
-             * "AllWindowFunction" which means that at the end of every window this function is called,
-             * creating a new stream.
-             * With a window size of 300 seconds and a window interval of 60 seconds there will be 5 active
-             * windows.
-             */
-                .apply(new TopNTweetsAllWindowFunction());
-
-
         /*
-         * The datastream is saved to a Sink, in this case Redis.
-         * For quick tests in your IDE you can replace .addSink(...) with .print()
+         * Start of streaming setup
          */
-        topNCalc.addSink(
-            new RedisSink<>(
-                new FlinkJedisPoolConfig.Builder().setHost(redisHost).setPort(redisPort).build(),
-                new RedisMapper<Tuple3<Integer, String, Long>>() {
-                    @Override
-                    public RedisCommandDescription getCommandDescription() {
-                        return new RedisCommandDescription(RedisCommand.SET);
-                    }
+        LOG.debug(String.format("Starting TopNHashtags with: N=%d, window size=%d, window slide=%d, redis=%s%d",
+                n, windowSize, windowSlide, redisHost, redisPort));
 
-                    @Override
-                    public String getKeyFromData(Tuple3<Integer, String, Long> data) {
-                        return "Top10-" + data.f0;
-                    }
+        // Map the statuses.
+        DataStream<Tuple3<Long, String, String>> mappedStatuses = env
+            .addSource(twitter, "Twitter")
+            .flatMap(new MapStatuses())
+            .assignTimestampsAndWatermarks(new AttachCurrentTime());
 
-                    @Override
-                    public String getValueFromData(Tuple3<Integer, String, Long> data) {
-                        return data.f1 + ", " + Long.toString(data.f2);
-                    }
-                }
-            )
-        ).name("Redis_" + redisHost + ":" + redisPort);
+        // Calculate the top N tags for the given time window.
+        DataStream<Tuple3<Integer, String, Long>> topNCalc = mappedStatuses
+                // ("tag1 tag2 tag3") -> [(tag1), (tag2), (tag3)]
+                .flatMap(new FlatMapTags())
+                // Sliding time window
+                .timeWindowAll(Time.seconds(windowSize), Time.seconds(windowSlide))
+                // Reduce and calculate the top N tags
+                .apply(new CalcTopNTags())
+                .forceNonParallel()
+                // Ensure that all nodes receive the new Top N
+                .broadcast();
 
-        SingleOutputStreamOperator<Tuple2<Long, String>> topNTexts = mappedStatuses.connect(topNCalc).flatMap(
-            new CoFlatMapFunction<Tuple3<Long, String, String>, Tuple3<Integer, String, Long>, Tuple2<Long, String>>() {
-                String[] topN;
 
-                @Override
-                public void flatMap1(Tuple3<Long, String, String> value, Collector<Tuple2<Long, String>> out) throws Exception {
-                    for (String tag : value.f2.split(" ")) {
-                        if (ArrayUtils.contains(topN, tag)) {
-                            out.collect(new Tuple2<>(value.f0, value.f1));
-                            break;
+        // Connect the output of topNCalc to the mapped statuses stream
+        SingleOutputStreamOperator<Tuple2<Long, String>> topNTexts = mappedStatuses
+                .connect(topNCalc)
+                .flatMap(new FilterTopNCoFlatMap());
+
+        // Print the statuses which contain a top N tag.
+        topNTexts
+                // Take only the text value as String
+                .map(value -> value.f1)
+                // Helper function for lambda functions in java (not necessary when using Scala)
+                .returns(String.class)
+                .print();
+
+
+        // Store the top N to redis if redis is configured
+        if (parameter.has("redisHost") || parameter.has("redisPort")) {
+            LOG.debug("Attaching redis host [" + redisHost + ":"+ redisPort+"]");
+            topNCalc.addSink(
+                new RedisSink<>(
+                    new FlinkJedisPoolConfig.Builder().setHost(redisHost).setPort(redisPort).build(),
+                    new RedisMapper<Tuple3<Integer, String, Long>>() {
+                        @Override
+                        public RedisCommandDescription getCommandDescription() {
+                            return new RedisCommandDescription(RedisCommand.SET);
+                        }
+
+                        @Override
+                        public String getKeyFromData(Tuple3<Integer, String, Long> data) {
+                            return "Top10-" + data.f0;
+                        }
+
+                        @Override
+                        public String getValueFromData(Tuple3<Integer, String, Long> data) {
+                            return data.f1 + ", " + Long.toString(data.f2);
                         }
                     }
-                }
-
-                @Override
-                public void flatMap2(Tuple3<Integer, String, Long> value, Collector<Tuple2<Long, String>> out) throws Exception {
-                    if (topN == null) {
-                        topN = new String[n];
-                    }
-                    topN[value.f0 - 1] = value.f1;
-                }
-            }
-        );
-
-
-
-        topNTexts.map(value -> "Status: \t" + value.f1).returns(String.class).print();
+                )
+            ).name("Redis_" + redisHost + ":" + redisPort);
+        } else {
+            LOG.debug("Redis was not configured, the redis sink for the Top N tags will not be added.");
+        }
 
         /*
          *  Actually execute the streaming plan defined above.
@@ -271,20 +181,83 @@ public class TopNHashtags {
 
     }
 
+    /**
+     * Maps incoming statuses as (ID, Text, Tags) with the tags as a space separated string.
+     * This is done as a flatmap to be able to filter out bad values.
+     */
+    static class MapStatuses implements FlatMapFunction<String, Tuple3<Long, String, String>>{
+        @Override
+        public void flatMap(String value, Collector<Tuple3<Long, String, String>> collector) throws Exception {
+            try {
+                JSONObject status = new JSONObject(value);
+                String statusText = status.getString("text");
+                Long statusID = status.getLong("id");
+
+                JSONArray hashTags = status.getJSONObject("entities").getJSONArray("hashtags");
+                StringBuilder hashTagString = new StringBuilder();
+                for (int i = 0; i < hashTags.length(); i++) {
+                    if (hashTagString.length() > 0) {
+                        hashTagString.append(" ");
+                    }
+                    hashTagString.append(hashTags.getJSONObject(i).getString("text").toLowerCase());
+                    LOG.debug(hashTagString.toString());
+
+                }
+
+                collector.collect(new Tuple3<>(statusID, statusText, hashTagString.toString()));
+
+            } catch (JSONException | ArrayIndexOutOfBoundsException e) {/* Skip */}
+        }
+    }
+
+    /**
+     * Add the current time as timestamp to the status.
+     * This is usually done in the source function, but the twitter connector has not done so. Hence the need to add the
+     * timestamps manually.
+     */
+    static class AttachCurrentTime implements AssignerWithPeriodicWatermarks<Tuple3<Long, String, String>>{
+
+        @Override
+        public Watermark getCurrentWatermark() {
+            return new Watermark(System.currentTimeMillis() - 1000L);
+        }
+
+        @Override
+        public long extractTimestamp(Tuple3<Long, String, String> element, long previousElementTimestamp) {
+            return System.currentTimeMillis();
+        }
+    }
+
+    /**
+     * FlatMaps all tags from incoming statuses as Tuple1<String>.
+     */
+    private static class FlatMapTags implements FlatMapFunction<Tuple3<Long, String, String>, Tuple2<String, Long>> {
+        @Override
+        public void flatMap(Tuple3<Long, String, String> value, Collector<Tuple2<String, Long>> out) throws Exception {
+            for (String tag : value.f2.trim().split(" ")) {
+                if (tag.equals(" ") || tag.equals("")) {
+                    continue;
+                }
+                out.collect(new Tuple2<>(tag, 1L));
+            }
+        }
+    }
 
     /**
      * Apply function for aggregating Tweet counts within a window.
-     * Listed seperately because of its size.
      */
-    static class TopNTweetsAllWindowFunction implements AllWindowFunction<Tuple2<String, Long>, Tuple3<Integer, String, Long>, TimeWindow> {
+    static class CalcTopNTags implements AllWindowFunction<
+            Tuple2<String, Long>,
+            Tuple3<Integer, String, Long>,
+            TimeWindow> {
 
         @Override
-        public void apply(TimeWindow window, Iterable<Tuple2<String, Long>> values, Collector<Tuple3<Integer, String, Long>> out) throws Exception {
+        public void apply(TimeWindow window, Iterable<Tuple2<String, Long>> values, Collector<Tuple3<Integer,
+                String, Long>> out) throws Exception {
             LOG.debug("Window finished");
 
             // List of all entries in this window.
             List<Tuple2<String, Long>> entries = new LinkedList<>();
-
 
             for (Tuple2<String, Long> tag : values) {
                 if (entries.size() == 0 ) {
@@ -292,8 +265,8 @@ public class TopNHashtags {
                 }
 
                 ListIterator<Tuple2<String, Long>> iter = entries.listIterator();
-
                 boolean modified = false;
+
                 while (iter.hasNext()) {
                     Tuple2<String, Long> h = iter.next();
 
@@ -317,6 +290,49 @@ public class TopNHashtags {
             }
 
             entries.clear();
+        }
+    }
+
+    /**
+     * Takes a stream with a new Top N and the main stream of mapped tweets as input. Passes the text and ID of tweets
+     * that have a top N tag attached.
+     */
+    static class FilterTopNCoFlatMap implements CoFlatMapFunction<
+            Tuple3<Long, String, String>,
+            Tuple3<Integer, String, Long>,
+            Tuple2<Long, String>
+            >{
+        String[] topN;
+
+        /**
+         * Filters the messages with a top N tag attached.
+         * Removes the tags as they are no longer needed.
+         *
+         * @param value (ID, Text, Tags)
+         * @param out (ID, Text)
+         */
+        @Override
+        public void flatMap1(Tuple3<Long, String, String> value, Collector<Tuple2<Long, String>> out) throws Exception {
+            for (String tag : value.f2.split(" ")) {
+                if (ArrayUtils.contains(topN, tag)) {
+                    out.collect(new Tuple2<>(value.f0, value.f1));
+                    break;
+                }
+            }
+        }
+
+        /**
+         * Saves the new top N values in the filter function.
+         *
+         * @param value (top n position, tag, count)
+         * @param out Nothing
+         */
+        @Override
+        public void flatMap2(Tuple3<Integer, String, Long> value, Collector<Tuple2<Long, String>> out) throws Exception {
+            if (topN == null) {
+                topN = new String[n];
+            }
+            topN[value.f0 - 1] = value.f1;
         }
     }
 
