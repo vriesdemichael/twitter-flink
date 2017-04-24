@@ -10,7 +10,7 @@
     </appender>
 
     <logger name="org.apache.http.wire" level="ERROR"/>
-    <logger name="TopNHashtags" level="ALL"/>
+    <logger name="TopNHashtags" level="ERROR"/>
     <logger name="TwitterFilterEndpoint" level="INFO"/>
 
 

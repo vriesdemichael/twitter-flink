@@ -119,7 +119,7 @@ public class TopNHashtags {
             .assignTimestampsAndWatermarks(new AttachCurrentTime());
 
         // Calculate the top N tags for the given time window.
-        DataStream<Tuple3<Integer, String, Long>> topNCalc = mappedStatuses
+        DataStream<Tuple3<Integer, String, Long>> topNTags = mappedStatuses
                 // ("tag1 tag2 tag3") -> [(tag1), (tag2), (tag3)]
                 .flatMap(new FlatMapTags())
                 // Sliding time window
@@ -133,7 +133,7 @@ public class TopNHashtags {
 
         // Connect the output of topNCalc to the mapped statuses stream
         SingleOutputStreamOperator<Tuple2<Long, String>> topNTexts = mappedStatuses
-                .connect(topNCalc)
+                .connect(topNTags)
                 .flatMap(new FilterTopNCoFlatMap());
 
         // Print the statuses which contain a top N tag.
@@ -148,7 +148,7 @@ public class TopNHashtags {
         // Store the top N to redis if redis is configured
         if (parameter.has("redisHost") || parameter.has("redisPort")) {
             LOG.debug("Attaching redis host [" + redisHost + ":"+ redisPort+"]");
-            topNCalc.addSink(
+            topNTags.addSink(
                 new RedisSink<>(
                     new FlinkJedisPoolConfig.Builder().setHost(redisHost).setPort(redisPort).build(),
                     new RedisMapper<Tuple3<Integer, String, Long>>() {
@@ -200,8 +200,6 @@ public class TopNHashtags {
                         hashTagString.append(" ");
                     }
                     hashTagString.append(hashTags.getJSONObject(i).getString("text").toLowerCase());
-                    LOG.debug(hashTagString.toString());
-
                 }
 
                 collector.collect(new Tuple3<>(statusID, statusText, hashTagString.toString()));
